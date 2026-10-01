@@ -297,15 +297,18 @@ function readSensor_(s, token, tz, now) {
   throw new Error('Unknown source: ' + s.source);
 }
 
-// LI-COR Cloud. The id is "loggerSerial|sensorSerial".
+// LI-COR Cloud. The id is "loggerSerial|sensorSerial". The query is BlightCast's,
+// the form verified live against LI-COR (08-10): deviceSerialNumber +
+// sensorSerialNumber + startTime/endTime in ms. (loggers= / sensors= /
+// start_date_time= is answered 400 — found on the first real test, 10-01.)
 function readLicor_(s, token, now) {
   if (!token) throw new Error('No LI-COR token saved');
   var parts = String(s.id).split('|');
-  var q = 'loggers=' + encodeURIComponent(parts[0]) + '&sensors=' + encodeURIComponent(parts[1] || '') +
-    '&start_date_time=' + encodeURIComponent(utcStamp_(now - 3 * 3600000)) + '&end_date_time=' + encodeURIComponent(utcStamp_(now));
+  var q = 'deviceSerialNumber=' + encodeURIComponent(parts[0]) + '&sensorSerialNumber=' + encodeURIComponent(parts[1] || '') +
+    '&startTime=' + Math.floor(now - 3 * 3600000) + '&endTime=' + Math.floor(now);
   var r = fetch_('https://api.licor.cloud/v2/data?' + q, { headers: { Authorization: 'Bearer ' + token } });
   if (r.code === 401 || r.code === 403) throw new Error('LI-COR refused the token');
-  if (r.code !== 200) throw new Error('LI-COR answered ' + r.code);
+  if (r.code !== 200) throw new Error('LI-COR answered ' + r.code + why_(r.text));
   return licorLatest(JSON.parse(r.text), parts[1] || '');
 }
 // Pure: /v2/data reply → the newest temperature of one sensor, in °F.
@@ -568,7 +571,8 @@ function tzOffsetMin_(tz, now) {
   var m = String(z).match(/^([+-])(\\d{2})(\\d{2})$/);
   return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 0;
 }
-function utcStamp_(ms) { return new Date(ms).toISOString().slice(0, 19).replace('T', ' '); }
+// the service's own words on an error, briefly — so a failure says WHY
+function why_(text) { var s = String(text || '').replace(/\\s+/g, ' ').trim().slice(0, 160); return s ? ': ' + s : ''; }
 function checkKey_(key) {
   key = String(key || '');
   if (key.length < 4) return { ok: false, error: 'The setup password needs at least 4 characters.' };
@@ -894,15 +898,18 @@ function readSensor_(s, token, tz, now) {
   throw new Error('Unknown source: ' + s.source);
 }
 
-// LI-COR Cloud. The id is "loggerSerial|sensorSerial".
+// LI-COR Cloud. The id is "loggerSerial|sensorSerial". The query is BlightCast's,
+// the form verified live against LI-COR (08-10): deviceSerialNumber +
+// sensorSerialNumber + startTime/endTime in ms. (loggers= / sensors= /
+// start_date_time= is answered 400 — found on the first real test, 10-01.)
 function readLicor_(s, token, now) {
   if (!token) throw new Error('No LI-COR token saved');
   var parts = String(s.id).split('|');
-  var q = 'loggers=' + encodeURIComponent(parts[0]) + '&sensors=' + encodeURIComponent(parts[1] || '') +
-    '&start_date_time=' + encodeURIComponent(utcStamp_(now - 3 * 3600000)) + '&end_date_time=' + encodeURIComponent(utcStamp_(now));
+  var q = 'deviceSerialNumber=' + encodeURIComponent(parts[0]) + '&sensorSerialNumber=' + encodeURIComponent(parts[1] || '') +
+    '&startTime=' + Math.floor(now - 3 * 3600000) + '&endTime=' + Math.floor(now);
   var r = fetch_('https://api.licor.cloud/v2/data?' + q, { headers: { Authorization: 'Bearer ' + token } });
   if (r.code === 401 || r.code === 403) throw new Error('LI-COR refused the token');
-  if (r.code !== 200) throw new Error('LI-COR answered ' + r.code);
+  if (r.code !== 200) throw new Error('LI-COR answered ' + r.code + why_(r.text));
   return licorLatest(JSON.parse(r.text), parts[1] || '');
 }
 // Pure: /v2/data reply → the newest temperature of one sensor, in °F.
@@ -1165,7 +1172,8 @@ function tzOffsetMin_(tz, now) {
   var m = String(z).match(/^([+-])(\\d{2})(\\d{2})$/);
   return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 0;
 }
-function utcStamp_(ms) { return new Date(ms).toISOString().slice(0, 19).replace('T', ' '); }
+// the service's own words on an error, briefly — so a failure says WHY
+function why_(text) { var s = String(text || '').replace(/\\s+/g, ' ').trim().slice(0, 160); return s ? ': ' + s : ''; }
 function checkKey_(key) {
   key = String(key || '');
   if (key.length < 4) return { ok: false, error: 'The setup password needs at least 4 characters.' };
