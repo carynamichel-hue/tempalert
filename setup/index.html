@@ -1,0 +1,598 @@
+<!DOCTYPE html><html  lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Temp Alert</title><script type="importmap">{"imports":{"#entry":"/tempalert/_nuxt/NXwFJIxA.js"}}</script><link rel="stylesheet" href="/tempalert/_nuxt/entry.BYVMsvSw.css" crossorigin><link rel="preload" as="fetch" crossorigin="anonymous" href="/tempalert/setup/_payload.json?_b=dc9f1ed6-6aaf-4b61-ad03-cf4a9286d076"><link rel="modulepreload" as="script" crossorigin href="/tempalert/_nuxt/NXwFJIxA.js"><link rel="modulepreload" as="script" crossorigin href="/tempalert/_nuxt/-aD-WF9S.js"><link rel="modulepreload" as="script" crossorigin href="/tempalert/_nuxt/BghSdCAY.js"><link rel="modulepreload" as="script" crossorigin href="/tempalert/_nuxt/tWw1_ND7.js"><link rel="modulepreload" as="script" crossorigin href="/tempalert/_nuxt/CkbTGez5.js"><link rel="modulepreload" as="script" crossorigin href="/tempalert/_nuxt/DgmR6ysd.js"><script type="module" src="/tempalert/_nuxt/NXwFJIxA.js" crossorigin></script><link rel="prefetch" as="script" crossorigin href="/tempalert/_nuxt/ldeB7GTH.js"><link rel="prefetch" as="script" crossorigin href="/tempalert/_nuxt/BDNMzG2s.js"><link rel="prefetch" as="script" crossorigin href="/tempalert/_nuxt/Db2LTXKM.js"><meta name="theme-color" content="#2F6B3A"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Temp Alert"><meta name="description" content="Frost and heat email alerts from your own temperature sensors or a nearby weather station."><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://script.google.com https://script.googleusercontent.com https://geocoding-api.open-meteo.com https://newa.rcc-acis.workers.dev https://api.weather.gov http://localhost:3021; object-src 'none'; base-uri 'self'; form-action 'none'"><link rel="icon" type="image/svg+xml" href="/tempalert/icon.svg"><link rel="manifest" href="/tempalert/manifest.webmanifest"><link rel="apple-touch-icon" href="/tempalert/icon-192.png"></head><body><div id="__nuxt"><div><header class="topbar"><div class="wrap topbar-in"><div class="topbar-top"><a href="/tempalert/" class="brand"> 🌡 Temp Alert <!----></a><div class="topbar-actions"><div class="menu-wrap"><button class="menu-btn" type="button" aria-expanded="false" aria-label="Menu" title="Menu">⚙</button><!----></div></div></div><a href="/tempalert/" class="back-link">← Readings</a></div></header><main><div class="wrap"><!----><!----><div class="stack setup"><h1>Setup</h1><!----><section class="panel stack"><h2>1 · Make the sheet</h2><ol class="steps-list" type="a"><li>Make a new Google Sheet (sheets.new) and name it — for example “Temp alerts”. Use the Google account the emails should come FROM (a shared farm account is best).</li><li>In the sheet: Extensions → Apps Script. Delete what is there, paste the script (first button below) and click Save.</li><li>Still in Apps Script: Project Settings (the gear on the left) → tick “Show appsscript.json manifest file in editor”. Back in the Editor, click appsscript.json, replace everything in it with the settings file (second button) and click Save.</li><li>Deploy → New deployment → gear → Web app. Execute as: Me. Who has access: Anyone. Click Deploy.</li><li>Allow the permissions — see “What Google will show you” below.</li><li>Copy the Web app URL (it ends in /exec) and paste it in step 2.</li></ol><div class="row"><button class="btn btn-primary" data-copy="script">1 · Copy the script</button><button class="btn btn-primary" data-copy="manifest">2 · Copy the settings file</button><a class="btn" href="https://sheets.new" target="_blank" rel="noopener">sheets.new ↗</a></div><details class="script-box"><summary>Show the script</summary><pre>/**
+ * Temp Alert — the Google Apps Script that watches your temperature sensors
+ * and emails people when one goes too cold or too hot.
+ *
+ * WHAT IT DOES
+ *   · Every 15 minutes it reads the latest temperature from each sensor on
+ *     the &quot;Alerts&quot; tab — a LI-COR sensor (with your LI-COR Cloud token), a
+ *     NEWA weather station, or a National Weather Service station.
+ *   · Each sensor can have its own alerts: &quot;at or below 32 °F → email these
+ *     people&quot;, &quot;at or above 95 °F → email those people&quot;.
+ *   · It emails ONCE when a reading crosses the line, and once more when it
+ *     is back to normal (a couple of degrees past the line, so a reading
+ *     hovering right at 32 does not send twenty emails).
+ *   · If a sensor stops reporting, it says so — a dead sensor must never
+ *     look like a quiet night.
+ *   · Every email it sends is written on the &quot;Alert log&quot; tab.
+ *
+ * WHAT IT CAN REACH (the permissions are set in appsscript.json, which the
+ * app&#39;s Setup page gives you too):
+ *   · &quot;spreadsheets.currentonly&quot; — THIS spreadsheet only.
+ *   · &quot;script.external_request&quot; — to read the weather stations and LI-COR.
+ *   · &quot;script.send_mail&quot; — to send the alert emails, from your address.
+ *   · &quot;script.scriptapp&quot; — to run itself every 15 minutes while you sleep.
+ *   It never reads your email, your Drive or any other sheet.
+ *
+ * HOW TO INSTALL (once — the app&#39;s Setup page walks through it)
+ *   1. In a new Google Sheet: Extensions → Apps Script. Delete what is there,
+ *      paste this whole file, click Save.
+ *   2. Project Settings (gear) → tick &quot;Show appsscript.json manifest file in
+ *      editor&quot;. Back in the Editor, open appsscript.json, replace everything
+ *      in it with the app&#39;s appsscript.json, click Save.
+ *   3. Deploy → New deployment → type &quot;Web app&quot;. Execute as: Me. Who has
+ *      access: Anyone. Click Deploy and allow the permissions. Google warns
+ *      &quot;This app hasn&#39;t been verified&quot; — normal for a script in your own
+ *      sheet: Advanced → Go to (project) (unsafe) → Allow.
+ *      Copy the &quot;Web app URL&quot; (it ends in /exec) into the app&#39;s Setup page.
+ *   &quot;Anyone&quot; lets the app (and your crew&#39;s phones) read the latest readings
+ *   without a Google sign-in. The email addresses and the LI-COR token are
+ *   never sent to anyone without the setup password.
+ *
+ * SETUP PASSWORD: the first time the app saves, the password typed there
+ * becomes the setup password. To reset it: Project Settings (gear) → Script
+ * properties → delete SETUP_KEY.
+ *
+ * WITHOUT THE APP: pick &quot;startChecking&quot; in the function list at the top of
+ * the editor and click Run — that turns on the 15-minute check. &quot;stopChecking&quot;
+ * turns it off; &quot;sendTestEmail&quot; sends a test to everyone on the Alerts tab.
+ *
+ * After editing this code, publish the change with Deploy → Manage
+ * deployments → edit (pencil) → Version: New version → Deploy.
+ */
+
+var ALERTS = &#39;Alerts&#39;;
+var SETTINGS_TAB = &#39;Settings&#39;;
+var LOG = &#39;Alert log&#39;;
+var CHECK_EVERY_MIN = 15;
+var SUBJECT_TAG = &#39;[Temp Alert]&#39;;
+
+var ALERT_HEADERS = [&#39;Sensor&#39;, &#39;Source&#39;, &#39;Station / sensor ID&#39;, &#39;Alert when&#39;, &#39;Temperature (°F)&#39;, &#39;Email to&#39;, &#39;On&#39;];
+var LOG_HEADERS = [&#39;Sent&#39;, &#39;Sensor&#39;, &#39;What happened&#39;, &#39;Reading (°F)&#39;, &#39;Reading time&#39;, &#39;Alert at (°F)&#39;, &#39;Emailed to&#39;];
+// [key, label on the Settings tab, default]
+var SETTINGS = [
+  [&#39;title&#39;, &#39;Title&#39;, &#39;&#39;],
+  [&#39;staleMinutes&#39;, &#39;Not reporting after (minutes)&#39;, 120],
+  [&#39;margin&#39;, &#39;Back to normal margin (°F)&#39;, 2],
+  [&#39;sendClear&#39;, &#39;Send back-to-normal emails&#39;, true],
+  [&#39;appUrl&#39;, &#39;Status page&#39;, &#39;&#39;],
+];
+var SOURCES = { licor: &#39;LI-COR&#39;, newa: &#39;NEWA station&#39;, nws: &#39;Weather Service station&#39; };
+var SOURCE_FROM_LABEL = { &#39;li-cor&#39;: &#39;licor&#39;, &#39;licor&#39;: &#39;licor&#39;, &#39;newa station&#39;: &#39;newa&#39;, &#39;newa&#39;: &#39;newa&#39;,
+  &#39;weather service station&#39;: &#39;nws&#39;, &#39;nws&#39;: &#39;nws&#39;, &#39;national weather service&#39;: &#39;nws&#39; };
+
+/* ── web app entry points ─────────────────────────────────────────────── */
+
+function doGet(e) {
+  var p = (e &amp;&amp; e.parameter) || {};
+  try {
+    if (p.action === &#39;ping&#39;) return json_({ ok: true });
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    return json_(publicView_(ss));
+  } catch (err) {
+    return json_({ ok: false, error: String((err &amp;&amp; err.message) || err) });
+  }
+}
+
+function doPost(e) {
+  var lock = LockService.getScriptLock();
+  try {
+    var body = JSON.parse((e &amp;&amp; e.postData &amp;&amp; e.postData.contents) || &#39;{}&#39;);
+    lock.waitLock(25000);
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var check = checkKey_(body.key);
+    if (body.action === &#39;checkKey&#39;) return json_(check);
+    if (!check.ok) return json_(check);
+    // A sheet with no password yet takes the first one it is given — the
+    // owner sets it in the app&#39;s Setup right after deploying.
+    if (check.first) setProp_(&#39;SETUP_KEY&#39;, String(body.key));
+    if (body.action === &#39;setup&#39;) { writeConfig_(ss, body.config || {}); return json_(ownerView_(ss)); }
+    if (body.action === &#39;load&#39;) return json_(ownerView_(ss));
+    if (body.action === &#39;licor&#39;) return json_(licorAction_(body));
+    if (body.action === &#39;checking&#39;) { setChecking_(!!body.on); return json_(ownerView_(ss)); }
+    if (body.action === &#39;checkNow&#39;) { runCheck_(ss, Date.now()); return json_(ownerView_(ss)); }
+    if (body.action === &#39;test&#39;) return json_(sendTest_(ss, body.to));
+    return json_({ ok: false, error: &#39;Unknown action.&#39; });
+  } catch (err) {
+    return json_({ ok: false, error: String((err &amp;&amp; err.message) || err) });
+  } finally {
+    try { lock.releaseLock(); } catch (ignore) { /* never acquired */ }
+  }
+}
+
+// What anyone with the link may see: readings and alert states, never the
+// email addresses (a forwarded link must not hand out the crew&#39;s addresses).
+function publicView_(ss) {
+  var cfg = readConfig_(ss);
+  return {
+    ok: true, sheetName: ss.getName(), title: cfg.title,
+    status: statusOf_(cfg, readState_()), checking: isChecking_(),
+    lastCheck: Number(getProp_(&#39;LAST_CHECK&#39;) || 0) || null,
+    hasKey: !!getKey_(), hasLicor: !!getProp_(&#39;LICOR_TOKEN&#39;),
+  };
+}
+function ownerView_(ss) {
+  var v = publicView_(ss);
+  v.config = readConfig_(ss);
+  v.quota = mailQuota_();
+  return v;
+}
+
+/* ── the check (every 15 minutes) ─────────────────────────────────────── */
+
+// The trigger&#39;s entry point. Skips quietly if a check is already running.
+function checkAll() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return;
+  try { runCheck_(SpreadsheetApp.getActiveSpreadsheet(), Date.now()); } finally { lock.releaseLock(); }
+}
+
+// Run from the editor to turn checking on without the app (and to give the
+// permissions the first time).
+function startChecking() { setChecking_(true); runCheck_(SpreadsheetApp.getActiveSpreadsheet(), Date.now()); }
+function stopChecking() { setChecking_(false); }
+function sendTestEmail() { return sendTest_(SpreadsheetApp.getActiveSpreadsheet(), null); }
+
+function runCheck_(ss, now) {
+  var cfg = readConfig_(ss);
+  var state = readState_();
+  var next = {};
+  var token = getProp_(&#39;LICOR_TOKEN&#39;);
+  var tz = tz_(ss);
+  var sent = [];
+  cfg.sensors.forEach(function (s) {
+    var key = sensorKey(s);
+    var reading = null, error = &#39;&#39;;
+    try { reading = readSensor_(s, token, tz, now); } catch (err) { error = String((err &amp;&amp; err.message) || err); }
+    var out = evaluate(s, reading, state[key] || null, cfg, now);
+    out.state.error = error;
+    next[key] = out.state;
+    out.events.forEach(function (ev) { sent.push(deliver_(ss, cfg, s, ev, tz)); });
+  });
+  setProp_(&#39;STATE&#39;, JSON.stringify(next));
+  setProp_(&#39;LAST_CHECK&#39;, String(now));
+  return sent;
+}
+
+/**
+ * Pure: one sensor, its newest reading (or null when it could not be read),
+ * what we knew last time → the new state and the emails to send.
+ *   state = { temp, at, checked, stale, rules: { &quot;below:32&quot;: &quot;ok&quot; | &quot;alert&quot; } }
+ * A reading counts only while it is younger than staleMinutes; a sensor whose
+ * newest reading is older than that (or that never answered) is &quot;not
+ * reporting&quot;, and its alerts hold their last state until it is back.
+ */
+function evaluate(sensor, reading, prev, cfg, now) {
+  prev = prev || { rules: {}, stale: false };
+  var staleMs = Math.max(15, Number(cfg.staleMinutes) || 120) * 60000;
+  var margin = Math.max(0, Number(cfg.margin) || 0);
+  var last = reading &amp;&amp; isFinite(reading.temp) ? reading : (prev.at ? { temp: prev.temp, at: prev.at } : null);
+  var state = { temp: last ? last.temp : null, at: last ? last.at : null, checked: now, stale: false, rules: {} };
+  var events = [];
+  var everyone = recipients_(sensor);
+  for (var k in prev.rules) state.rules[k] = prev.rules[k];
+
+  if (!last || now - last.at &gt; staleMs) {
+    state.stale = true;
+    if (!prev.stale &amp;&amp; everyone.length) events.push({ type: &#39;stale&#39;, to: everyone, temp: state.temp, at: state.at });
+    return { state: state, events: events };
+  }
+  if (prev.stale &amp;&amp; everyone.length) events.push({ type: &#39;back&#39;, to: everyone, temp: last.temp, at: last.at });
+
+  state.rules = {};
+  (sensor.alerts || []).forEach(function (a) {
+    if (!validAlert_(a)) return;
+    var k = ruleKey(a);
+    var was = prev.rules[k] || &#39;ok&#39;;
+    var t = Number(a.temp), v = last.temp;
+    var hit = a.when === &#39;below&#39; ? v &lt;= t : v &gt;= t;
+    var clear = a.when === &#39;below&#39; ? v &gt;= t + margin : v &lt;= t - margin;
+    var now_ = was;
+    if (a.on === false) now_ = &#39;ok&#39;;
+    else if (was === &#39;ok&#39; &amp;&amp; hit) {
+      now_ = &#39;alert&#39;;
+      if (a.emails.length) events.push({ type: &#39;alert&#39;, to: a.emails.slice(), alert: a, temp: v, at: last.at });
+    } else if (was === &#39;alert&#39; &amp;&amp; clear) {
+      now_ = &#39;ok&#39;;
+      // coming back from silence, the &quot;reporting again&quot; email already gives
+      // the reading — a second &quot;back to normal&quot; one would just be noise
+      if (cfg.sendClear !== false &amp;&amp; !prev.stale &amp;&amp; a.emails.length) events.push({ type: &#39;clear&#39;, to: a.emails.slice(), alert: a, temp: v, at: last.at });
+    }
+    state.rules[k] = now_;
+  });
+  return { state: state, events: events };
+}
+
+function ruleKey(a) { return a.when + &#39;:&#39; + Number(a.temp); }
+function sensorKey(s) { return s.source + &#39;:&#39; + s.id; }
+function validAlert_(a) { return a &amp;&amp; (a.when === &#39;below&#39; || a.when === &#39;above&#39;) &amp;&amp; a.temp !== &#39;&#39; &amp;&amp; a.temp != null &amp;&amp; isFinite(Number(a.temp)); }
+function recipients_(s) {
+  var all = [];
+  (s.alerts || []).forEach(function (a) { if (a.on !== false) (a.emails || []).forEach(function (m) { if (all.indexOf(m) &lt; 0) all.push(m); }); });
+  return all;
+}
+
+/* ── emails ───────────────────────────────────────────────────────────── */
+
+// Pure: the subject and text of one email.
+function message(sensor, ev, cfg, fmt) {
+  var name = sensor.name || sensor.id;
+  var f = function (v) { return v == null || !isFinite(v) ? &#39;—&#39; : (Math.round(v * 10) / 10) + &#39;°F&#39;; };
+  var when = ev.at ? fmt(ev.at) : &#39;no reading yet&#39;;
+  var a = ev.alert || {};
+  var subject, lead;
+  if (ev.type === &#39;alert&#39; &amp;&amp; a.when === &#39;below&#39;) { subject = &#39;🥶 &#39; + name + &#39; is &#39; + f(ev.temp) + &#39; (at or below &#39; + f(a.temp) + &#39;)&#39;; lead = name + &#39; has dropped to &#39; + f(ev.temp) + &#39;.&#39;; }
+  else if (ev.type === &#39;alert&#39;) { subject = &#39;🔥 &#39; + name + &#39; is &#39; + f(ev.temp) + &#39; (at or above &#39; + f(a.temp) + &#39;)&#39;; lead = name + &#39; has reached &#39; + f(ev.temp) + &#39;.&#39;; }
+  else if (ev.type === &#39;clear&#39;) { subject = &#39;✅ &#39; + name + &#39; is back to &#39; + f(ev.temp); lead = name + &#39; is back to &#39; + f(ev.temp) + &#39; — past the &#39; + f(a.temp) + &#39; alert by the margin.&#39;; }
+  else if (ev.type === &#39;stale&#39;) { subject = &#39;⚠️ &#39; + name + &#39; has stopped reporting&#39;; lead = &#39;No new reading from &#39; + name + &#39; for over &#39; + (Number(cfg.staleMinutes) || 120) + &#39; minutes. Its alerts cannot fire until it reports again — check it.&#39;; }
+  else if (ev.type === &#39;back&#39;) { subject = &#39;✅ &#39; + name + &#39; is reporting again (&#39; + f(ev.temp) + &#39;)&#39;; lead = name + &#39; is reporting again.&#39;; }
+  else { subject = &#39;Test alert&#39;; lead = &#39;This is a test.&#39;; }
+  var lines = [lead, &#39;&#39;, &#39;Reading: &#39; + f(ev.temp) + &#39; at &#39; + when, &#39;Sensor: &#39; + name + &#39; (&#39; + (SOURCES[sensor.source] || sensor.source) + &#39; &#39; + sensor.id + &#39;)&#39;];
+  if (ev.alert) lines.push(&#39;Alert: &#39; + (a.when === &#39;below&#39; ? &#39;at or below &#39; : &#39;at or above &#39;) + f(a.temp));
+  if (cfg.appUrl) lines.push(&#39;&#39;, &#39;Live readings: &#39; + cfg.appUrl);
+  lines.push(&#39;&#39;, &#39;— Temp Alert&#39; + (cfg.title ? &#39; · &#39; + cfg.title : &#39;&#39;));
+  return { subject: SUBJECT_TAG + &#39; &#39; + subject, body: lines.join(&#39;\n&#39;) };
+}
+
+function deliver_(ss, cfg, sensor, ev, tz) {
+  var fmt = function (ms) { return Utilities.formatDate(new Date(ms), tz, &#39;EEE MMM d, h:mm a&#39;); };
+  var m = message(sensor, ev, cfg, fmt);
+  var what = { alert: &#39;ALERT&#39;, clear: &#39;Back to normal&#39;, stale: &#39;Not reporting&#39;, back: &#39;Reporting again&#39; }[ev.type] || ev.type;
+  var note = &#39;&#39;;
+  try {
+    if (MailApp.getRemainingDailyQuota() &lt; ev.to.length) throw new Error(&#39;Google’s daily email limit is used up — not sent&#39;);
+    MailApp.sendEmail({ to: ev.to.join(&#39;,&#39;), subject: m.subject, body: m.body, name: &#39;Temp Alert&#39; });
+  } catch (err) { note = &#39; — NOT SENT: &#39; + String((err &amp;&amp; err.message) || err); }
+  log_(ss, [new Date(), sensor.name || sensor.id, what + note, num_(ev.temp), ev.at ? new Date(ev.at) : &#39;&#39;,
+    ev.alert ? (ev.alert.when === &#39;below&#39; ? &#39;≤ &#39; : &#39;≥ &#39;) + ev.alert.temp : &#39;&#39;, ev.to.join(&#39;, &#39;)]);
+  return { type: ev.type, to: ev.to, subject: m.subject, sent: !note };
+}
+
+function sendTest_(ss, to) {
+  var cfg = readConfig_(ss);
+  var list = [];
+  if (to &amp;&amp; to.length) list = cleanEmails(to);
+  else cfg.sensors.forEach(function (s) { recipients_(s).forEach(function (m) { if (list.indexOf(m) &lt; 0) list.push(m); }); });
+  if (!list.length) return { ok: false, error: &#39;No email addresses yet — add people to an alert first.&#39; };
+  if (MailApp.getRemainingDailyQuota() &lt; list.length) return { ok: false, error: &#39;Google’s daily email limit is used up — try tomorrow.&#39; };
+  var body = [
+    &#39;This is a TEST from Temp Alert&#39; + (cfg.title ? &#39; (&#39; + cfg.title + &#39;)&#39; : &#39;&#39;) + &#39;. Nothing is wrong.&#39;,
+    &#39;&#39;,
+    &#39;Real alerts look like this one: the subject starts with &#39; + SUBJECT_TAG + &#39;, and they come from this same address.&#39;,
+    &#39;Did your phone buzz or ring for this email? If not, set it up now so a frost alert at 3 am wakes you —&#39;,
+    &#39;the steps are on the app’s Setup page, step 6&#39; + (cfg.appUrl ? &#39;: &#39; + cfg.appUrl.replace(/\/?(\?.*)?$/, &#39;/setup&#39;) : &#39;&#39;) + &#39;.&#39;,
+    &#39;&#39;,
+    &#39;Sensors watched: &#39; + cfg.sensors.map(function (s) { return s.name || s.id; }).join(&#39;, &#39;),
+  ].join(&#39;\n&#39;);
+  MailApp.sendEmail({ to: list.join(&#39;,&#39;), subject: SUBJECT_TAG + &#39; 🧪 Test alert — please check your phone rang&#39;, body: body, name: &#39;Temp Alert&#39; });
+  log_(ss, [new Date(), &#39;(test)&#39;, &#39;Test email&#39;, &#39;&#39;, &#39;&#39;, &#39;&#39;, list.join(&#39;, &#39;)]);
+  return { ok: true, sent: list, quota: mailQuota_() };
+}
+
+function mailQuota_() { try { return MailApp.getRemainingDailyQuota(); } catch (e) { return null; } }
+
+/* ── reading the sensors ─────────────────────────────────────────────── */
+
+// → { temp (°F), at (ms) } for the newest reading, or throws a readable error.
+function readSensor_(s, token, tz, now) {
+  if (s.source === &#39;licor&#39;) return readLicor_(s, token, now);
+  if (s.source === &#39;newa&#39;) return readNewa_(s, tz, now);
+  if (s.source === &#39;nws&#39;) return readNws_(s);
+  throw new Error(&#39;Unknown source: &#39; + s.source);
+}
+
+// LI-COR Cloud. The id is &quot;loggerSerial|sensorSerial&quot;.
+function readLicor_(s, token, now) {
+  if (!token) throw new Error(&#39;No LI-COR token saved&#39;);
+  var parts = String(s.id).split(&#39;|&#39;);
+  var q = &#39;loggers=&#39; + encodeURIComponent(parts[0]) + &#39;&amp;sensors=&#39; + encodeURIComponent(parts[1] || &#39;&#39;) +
+    &#39;&amp;start_date_time=&#39; + encodeURIComponent(utcStamp_(now - 3 * 3600000)) + &#39;&amp;end_date_time=&#39; + encodeURIComponent(utcStamp_(now));
+  var r = fetch_(&#39;https://api.licor.cloud/v2/data?&#39; + q, { headers: { Authorization: &#39;Bearer &#39; + token } });
+  if (r.code === 401 || r.code === 403) throw new Error(&#39;LI-COR refused the token&#39;);
+  if (r.code !== 200) throw new Error(&#39;LI-COR answered &#39; + r.code);
+  return licorLatest(JSON.parse(r.text), parts[1] || &#39;&#39;);
+}
+// Pure: /v2/data reply → the newest temperature of one sensor, in °F.
+function licorLatest(reply, serial) {
+  var best = null;
+  var base = String(serial).split(&#39;-&#39;)[0];
+  ((reply &amp;&amp; reply.sensors) || []).forEach(function (sn) {
+    var full = String(sn.sensorSerialNumber || &#39;&#39;);
+    if (full !== serial &amp;&amp; full.split(&#39;-&#39;)[0] !== base) return;
+    (sn.data || []).forEach(function (m) {
+      if (!/^temperature$/i.test(String(m.measurementType || &#39;&#39;))) return;
+      var isC = /c/i.test(m.units || &#39;&#39;) &amp;&amp; !/f/i.test(m.units || &#39;&#39;);
+      (m.records || []).forEach(function (rec) {
+        if (!rec || rec[1] == null || !isFinite(Number(rec[1]))) return;
+        var t = Number(rec[0]);
+        if (!best || t &gt; best.at) best = { at: t, temp: isC ? Number(rec[1]) * 9 / 5 + 32 : Number(rec[1]) };
+      });
+    });
+  });
+  if (!best) throw new Error(&#39;No temperature from this LI-COR sensor in the last 3 hours&#39;);
+  return best;
+}
+
+// Every temperature sensor on the LI-COR account, for the app&#39;s picker.
+function licorAction_(body) {
+  if (body.clear) { delProp_(&#39;LICOR_TOKEN&#39;); return { ok: true, hasLicor: false, sensors: [] }; }
+  var token = String(body.token || &#39;&#39;).trim() || getProp_(&#39;LICOR_TOKEN&#39;);
+  if (!token) return { ok: false, error: &#39;Paste your LI-COR Cloud token first.&#39; };
+  var r = fetch_(&#39;https://api.licor.cloud/v2/devices&#39;, { headers: { Authorization: &#39;Bearer &#39; + token } });
+  if (r.code === 401 || r.code === 403) return { ok: false, error: &#39;LI-COR refused that token — copy it again from LI-COR Cloud (Account → API tokens).&#39; };
+  if (r.code !== 200) return { ok: false, error: &#39;LI-COR answered &#39; + r.code + &#39; — try again in a minute.&#39; };
+  var sensors = licorSensors(JSON.parse(r.text));
+  if (String(body.token || &#39;&#39;).trim()) setProp_(&#39;LICOR_TOKEN&#39;, token);   // only a token that worked is kept
+  return { ok: true, hasLicor: true, sensors: sensors };
+}
+// Pure: /v2/devices → [{ id: &quot;logger|sensor&quot;, logger, loggerName, serial, units }]
+function licorSensors(reply) {
+  var out = [];
+  ((reply &amp;&amp; reply.devices) || []).forEach(function (d) {
+    (d.sensors || []).forEach(function (sn) {
+      var full = String(sn.sensorSerialNumber || &#39;&#39;);
+      if (!full || !/^temperature$/i.test(String(sn.measurementType || &#39;&#39;))) return;
+      out.push({ id: String(d.deviceSerialNumber) + &#39;|&#39; + full, logger: String(d.deviceSerialNumber || &#39;&#39;),
+        loggerName: String(d.deviceName || &#39;&#39;), serial: full, label: String(sn.label || sn.name || &#39;&#39;), units: String(sn.units || &#39;&#39;) });
+    });
+  });
+  return out;
+}
+
+// NEWA (Cornell). The id is the station id with its network, e.g. &quot;ude njwx&quot;.
+// stnHrly wants the station&#39;s clock: from yesterday 00 to the current hour —
+// an hour in its future is refused, so on a 400 it asks again an hour earlier.
+function readNewa_(s, tz, now) {
+  for (var back = 0; back &lt; 2; back++) {
+    var end = new Date(now - back * 3600000);
+    var payload = { sid: String(s.id), sdate: Utilities.formatDate(new Date(now - 86400000), tz, &#39;yyyyMMdd&#39;) + &#39;00&#39;, edate: Utilities.formatDate(end, tz, &#39;yyyyMMddHH&#39;) };
+    var r = fetch_(&#39;https://hrly.nrcc.cornell.edu/stnHrly&#39;, { method: &#39;post&#39;, contentType: &#39;application/json&#39;, payload: JSON.stringify(payload) });
+    if (r.code === 400 &amp;&amp; back === 0) continue;
+    if (r.code !== 200) throw new Error(&#39;NEWA answered &#39; + r.code);
+    return newaLatest(JSON.parse(r.text), tzOffsetMin_(tz, now));
+  }
+  throw new Error(&#39;NEWA refused the time window&#39;);
+}
+// Pure: stnHrly reply → the newest temperature (°F). Its hours are the
+// station&#39;s local clock; offsetMin turns them into real time.
+function newaLatest(reply, offsetMin) {
+  var rows = (reply &amp;&amp; (reply.hrlyData || reply.data)) || [];
+  var f = (reply &amp;&amp; (reply.hrlyFields || reply.fields)) || [&#39;date&#39;, &#39;flags&#39;, &#39;prcp&#39;, &#39;temp&#39;];
+  var iTemp = f.indexOf(&#39;temp&#39;);
+  var best = null;
+  rows.forEach(function (row) {
+    if (!row || iTemp &lt; 0) return;
+    var v = String(row[iTemp] == null ? &#39;&#39; : row[iTemp]).trim();
+    if (!v || !isFinite(Number(v)) || /^(m|nan|na|null|-)$/i.test(v)) return;
+    var d = String(row[0]), m = d.match(/^(\d{4})-?(\d{2})-?(\d{2})[T ]?(\d{2})/);
+    if (!m) return;
+    var at = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4]) - (offsetMin || 0) * 60000;
+    if (!best || at &gt; best.at) best = { at: at, temp: Number(v) };
+  });
+  if (!best) throw new Error(&#39;No temperature from this NEWA station in the last day&#39;);
+  return best;
+}
+
+// National Weather Service (api.weather.gov). The id is the station, e.g. &quot;KMIV&quot;.
+function readNws_(s) {
+  var r = fetch_(&#39;https://api.weather.gov/stations/&#39; + encodeURIComponent(s.id) + &#39;/observations?limit=6&#39;,
+    { headers: { Accept: &#39;application/geo+json&#39;, &#39;User-Agent&#39;: &#39;TempAlert (nursery temperature alerts)&#39; } });
+  if (r.code !== 200) throw new Error(&#39;Weather Service answered &#39; + r.code);
+  return nwsLatest(JSON.parse(r.text));
+}
+// Pure: /observations → the newest reading that HAS a temperature (°F).
+// The newest observation often has none yet, so it looks back a few.
+function nwsLatest(reply) {
+  var best = null;
+  ((reply &amp;&amp; reply.features) || []).forEach(function (ft) {
+    var p = ft &amp;&amp; ft.properties;
+    if (!p || !p.timestamp || !p.temperature || p.temperature.value == null) return;
+    var at = new Date(p.timestamp).getTime();
+    if (!isFinite(at)) return;
+    var c = Number(p.temperature.value);
+    var t = /degF/.test(p.temperature.unitCode || &#39;&#39;) ? c : c * 9 / 5 + 32;
+    if (!best || at &gt; best.at) best = { at: at, temp: t };
+  });
+  if (!best) throw new Error(&#39;No temperature from this Weather Service station lately&#39;);
+  return best;
+}
+
+function fetch_(url, opt) {
+  var o = { muteHttpExceptions: true, followRedirects: true };
+  for (var k in opt) o[k] = opt[k];
+  var r = UrlFetchApp.fetch(url, o);
+  return { code: r.getResponseCode(), text: r.getContentText() };
+}
+
+/* ── the Alerts and Settings tabs ─────────────────────────────────────── */
+
+function readConfig_(ss) {
+  var cfg = settingsFromValues(valuesOf_(ss, SETTINGS_TAB, 2));
+  cfg.sensors = alertsFromValues(valuesOf_(ss, ALERTS, ALERT_HEADERS.length));
+  return cfg;
+}
+function writeConfig_(ss, cfg) {
+  var a = alertsToValues(cfg.sensors || []);
+  var sh = ensureSheet_(ss, ALERTS);
+  sh.clear();
+  sh.getRange(1, 1, a.length, ALERT_HEADERS.length).setValues(a);
+  sh.setFrozenRows(1);
+  var s = settingsToValues(cfg);
+  var st = ensureSheet_(ss, SETTINGS_TAB);
+  st.clear();
+  st.getRange(1, 1, s.length, 2).setValues(s);
+  st.setFrozenRows(1);
+}
+function valuesOf_(ss, name, width) {
+  var sh = ss.getSheetByName(name);
+  if (!sh || sh.getLastRow() &lt; 2) return [];
+  return sh.getRange(1, 1, sh.getLastRow(), width).getValues();
+}
+
+// Pure: the Alerts tab → sensors, each with its alerts. One row = one alert;
+// rows with the same Source + ID are one sensor. A row with no &quot;Alert when&quot;
+// is a sensor being watched with no alert yet.
+function alertsFromValues(values) {
+  var out = [], ix = {};
+  var col = function (row, i) { return String(row[i] == null ? &#39;&#39; : row[i]).trim(); };
+  for (var r = 1; r &lt; values.length; r++) {
+    var row = values[r];
+    var source = SOURCE_FROM_LABEL[col(row, 1).toLowerCase()] || col(row, 1).toLowerCase();
+    var id = col(row, 2);
+    if (!id || !SOURCES[source]) continue;
+    var key = source + &#39;:&#39; + id;
+    if (!(key in ix)) { ix[key] = out.length; out.push({ name: col(row, 0) || id, source: source, id: id, alerts: [] }); }
+    var s = out[ix[key]];
+    var when = col(row, 3).toLowerCase();
+    when = /below|under|≤|&lt;|cold|frost/.test(when) ? &#39;below&#39; : (/above|over|≥|&gt;|hot|heat/.test(when) ? &#39;above&#39; : &#39;&#39;);
+    var temp = col(row, 4);
+    if (!when || temp === &#39;&#39; || !isFinite(Number(temp))) continue;
+    s.alerts.push({ when: when, temp: Number(temp), emails: cleanEmails(col(row, 5)), on: !/^(no|false|off|0)$/i.test(col(row, 6)) });
+  }
+  return out;
+}
+
+// Pure: sensors → the Alerts tab (header row first).
+function alertsToValues(sensors) {
+  var out = [ALERT_HEADERS.slice()];
+  (sensors || []).forEach(function (s) {
+    if (!s || !s.id || !SOURCES[s.source]) return;
+    var base = [safe_(s.name || s.id), SOURCES[s.source], safe_(String(s.id))];
+    var alerts = (s.alerts || []).filter(validAlert_);
+    if (!alerts.length) out.push(base.concat([&#39;&#39;, &#39;&#39;, &#39;&#39;, &#39;&#39;]));
+    alerts.forEach(function (a) {
+      out.push(base.concat([a.when === &#39;below&#39; ? &#39;At or below&#39; : &#39;At or above&#39;, Number(a.temp),
+        safe_(cleanEmails(a.emails).join(&#39;, &#39;)), a.on === false ? &#39;No&#39; : &#39;Yes&#39;]));
+    });
+  });
+  return out;
+}
+
+function settingsFromValues(values) {
+  var cfg = {};
+  SETTINGS.forEach(function (s) { cfg[s[0]] = s[2]; });
+  for (var r = 1; r &lt; values.length; r++) {
+    var label = String(values[r][0] == null ? &#39;&#39; : values[r][0]).trim().toLowerCase(), v = values[r][1];
+    SETTINGS.forEach(function (s) {
+      if (label !== s[1].toLowerCase()) return;
+      if (typeof s[2] === &#39;number&#39;) { var n = Number(v); if (v !== &#39;&#39; &amp;&amp; isFinite(n)) cfg[s[0]] = n; }
+      else if (typeof s[2] === &#39;boolean&#39;) cfg[s[0]] = !/^(no|false|off|0)$/i.test(String(v).trim());
+      else cfg[s[0]] = String(v == null ? &#39;&#39; : v).trim();
+    });
+  }
+  return cfg;
+}
+function settingsToValues(cfg) {
+  var out = [[&#39;Setting&#39;, &#39;Value&#39;]];
+  SETTINGS.forEach(function (s) {
+    var v = cfg[s[0]] == null ? s[2] : cfg[s[0]];
+    if (typeof s[2] === &#39;boolean&#39;) v = v === false ? &#39;No&#39; : &#39;Yes&#39;;
+    else if (typeof s[2] === &#39;number&#39;) v = isFinite(Number(v)) ? Number(v) : s[2];
+    else v = safe_(v);
+    out.push([s[1], v]);
+  });
+  return out;
+}
+
+// Pure: &quot;a@x.com, b@y.org; c@z&quot; (or a list) → the valid addresses, once each.
+function cleanEmails(v) {
+  var parts = Array.isArray(v) ? v : String(v || &#39;&#39;).split(/[\s,;]+/);
+  var out = [];
+  parts.forEach(function (p) {
+    var m = String(p || &#39;&#39;).trim().toLowerCase();
+    if (/^[^\s@&lt;&gt;()]+@[^\s@&lt;&gt;()]+\.[a-z]{2,}$/.test(m) &amp;&amp; out.indexOf(m) &lt; 0) out.push(m);
+  });
+  return out;
+}
+
+// Readings + alert states for the app (no addresses — counts only).
+function statusOf_(cfg, state) {
+  return cfg.sensors.map(function (s) {
+    var st = state[sensorKey(s)] || {};
+    return {
+      key: sensorKey(s), name: s.name, source: s.source, id: s.id,
+      temp: st.temp == null ? null : Math.round(st.temp * 10) / 10, at: st.at || null, checked: st.checked || null,
+      stale: !!st.stale, error: st.error || &#39;&#39;,
+      alerts: (s.alerts || []).map(function (a) {
+        return { when: a.when, temp: a.temp, on: a.on !== false, people: a.emails.length, state: (st.rules || {})[ruleKey(a)] || &#39;ok&#39; };
+      }),
+    };
+  });
+}
+
+/* ── the 15-minute trigger ───────────────────────────────────────────── */
+
+function isChecking_() {
+  return ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === &#39;checkAll&#39;; });
+}
+function setChecking_(on) {
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === &#39;checkAll&#39;) ScriptApp.deleteTrigger(t); });
+  if (on) ScriptApp.newTrigger(&#39;checkAll&#39;).timeBased().everyMinutes(CHECK_EVERY_MIN).create();
+}
+
+/* ── small helpers ────────────────────────────────────────────────────── */
+
+function log_(ss, row) {
+  var sh = ensureSheet_(ss, LOG, LOG_HEADERS);
+  sh.getRange(sh.getLastRow() + 1, 1, 1, LOG_HEADERS.length).setValues([row.map(function (v) { return typeof v === &#39;string&#39; ? safe_(v) : v; })]);
+}
+function ensureSheet_(ss, name, headers) {
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    if (headers) { sheet.getRange(1, 1, 1, headers.length).setValues([headers]); sheet.setFrozenRows(1); }
+  }
+  return sheet;
+}
+function readState_() { try { return JSON.parse(getProp_(&#39;STATE&#39;) || &#39;{}&#39;) || {}; } catch (e) { return {}; } }
+function tz_(ss) { return (ss.getSpreadsheetTimeZone &amp;&amp; ss.getSpreadsheetTimeZone()) || Session.getScriptTimeZone() || &#39;America/New_York&#39;; }
+// minutes east of UTC on that clock, e.g. -240 for EDT
+function tzOffsetMin_(tz, now) {
+  var z = Utilities.formatDate(new Date(now), tz, &#39;Z&#39;);
+  var m = String(z).match(/^([+-])(\d{2})(\d{2})$/);
+  return m ? (m[1] === &#39;-&#39; ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 0;
+}
+function utcStamp_(ms) { return new Date(ms).toISOString().slice(0, 19).replace(&#39;T&#39;, &#39; &#39;); }
+function checkKey_(key) {
+  key = String(key || &#39;&#39;);
+  if (key.length &lt; 4) return { ok: false, error: &#39;The setup password needs at least 4 characters.&#39; };
+  var stored = getKey_();
+  if (stored &amp;&amp; stored !== key) return { ok: false, error: &#39;That is not the setup password for this sheet.&#39; };
+  return { ok: true, first: !stored };
+}
+// Anything typed that starts like a formula is written as text, never run.
+function safe_(v) {
+  var s = v == null ? &#39;&#39; : String(v).slice(0, 2000);
+  return /^[=+\-@]/.test(s) ? &quot;&#39;&quot; + s : s;
+}
+function num_(v) { var n = Number(v); return (v === &#39;&#39; || v == null || isNaN(n)) ? &#39;&#39; : Math.round(n * 10) / 10; }
+function getProp_(k) { return PropertiesService.getScriptProperties().getProperty(k); }
+function setProp_(k, v) { PropertiesService.getScriptProperties().setProperty(k, v); }
+function delProp_(k) { PropertiesService.getScriptProperties().deleteProperty(k); }
+function getKey_() { return getProp_(&#39;SETUP_KEY&#39;) || &#39;&#39;; }
+function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+</pre></details><details class="script-box"><summary>Show the settings file</summary><pre>{
+  &quot;timeZone&quot;: &quot;America/New_York&quot;,
+  &quot;runtimeVersion&quot;: &quot;V8&quot;,
+  &quot;exceptionLogging&quot;: &quot;STACKDRIVER&quot;,
+  &quot;oauthScopes&quot;: [
+    &quot;https://www.googleapis.com/auth/spreadsheets.currentonly&quot;,
+    &quot;https://www.googleapis.com/auth/script.external_request&quot;,
+    &quot;https://www.googleapis.com/auth/script.send_mail&quot;,
+    &quot;https://www.googleapis.com/auth/script.scriptapp&quot;
+  ],
+  &quot;webapp&quot;: {
+    &quot;executeAs&quot;: &quot;USER_DEPLOYING&quot;,
+    &quot;access&quot;: &quot;ANYONE_ANONYMOUS&quot;
+  }
+}
+</pre></details><div class="warn-box"><h3>What Google will show you — and why it is OK</h3><ul class="steps-list"><li>“Google hasn’t verified this app”: normal for a script in your own sheet — the developer it names is you. Click Advanced → Go to (your project) (unsafe).</li><li>It then asks for four things. This sheet only — it cannot see your other sheets. Connect to an external service — to read the weather stations and LI-COR. Send email as you — the alerts. Run when you are not present — the 15-minute check overnight.</li><li>It never reads your email, your Drive or any other file.</li><li>Anyone you give EDIT access to the sheet can also edit the script — keep that list short.</li></ul></div></section><section class="panel stack"><h2>2 · Connect it</h2><label class="field"><span>Web app URL</span><input value="" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label><div class="row"><button class="btn btn-primary" disabled>Connect</button><!----></div><!----><!----></section><section class="panel stack"><h2>3 · Setup password</h2><label class="field"><span>Setup password</span><input value="" type="password" autocomplete="current-password"><small class="muted">The first password you type here becomes this sheet’s setup password. It protects the email addresses, the LI-COR token and the alerts.</small></label><div class="row"><button class="btn btn-primary" disabled>Open the alerts</button><!----></div><p class="muted small" style="margin:0;">Connect a sheet in step 2 first.</p><!----></section><section class="panel stack" data-step="sensors"><h2>4 · Sensors and alerts</h2><p class="muted small" style="margin:0;">Type the setup password in step 3 first.</p></section><section class="panel stack"><h2>5 · Turn on checking</h2><p class="small muted" style="margin:0;">Once on, the sheet checks every 15 minutes on Google’s computers — this phone and your computer can be off.</p><p style="margin:0;">Checking is <b class="is-off-text">OFF</b></p><div class="row"><button class="btn btn-primary" disabled>Turn on checking</button><button class="btn" disabled>Check now</button><a href="/tempalert/" class="btn">Readings →</a></div><p class="muted small" style="margin:0;">Type the setup password in step 3 first.</p><!----></section><section class="panel stack" id="notify"><h2>6 · Make sure the alert wakes you</h2><h3 style="margin:0;">🧪 Send a test alert</h3><div class="row"><button class="btn btn-primary" disabled>Send a test to everyone</button></div><div class="row"><input value="" type="text" inputmode="email" autocapitalize="off" placeholder="name@example.com" style="flex:1;min-width:12rem;"><button class="btn" disabled>Send a test to one address</button></div><!----><!----><!----><h3 style="margin:.6rem 0 0;">📱 Make sure an alert wakes you up</h3><div class="notify stack"><p class="small" style="margin:0;">Alerts are ordinary emails from the Google account that owns the sheet, and every subject starts with [Temp Alert]. A phone only rings for email if it is told to. Each person on the alerts should do these steps once.</p><ol class="notify-steps"><!--[--><li><b>Never in spam, always important (Gmail)</b><ul><!--[--><li>On a computer, in Gmail, type subject:&quot;[Temp Alert]&quot; in the search box and press Enter.</li><li>Click the “Show search options” sliders at the right of the search box → Create filter.</li><li>Tick “Never send it to Spam” and “Always mark it as important”, then Create filter.</li><li>Not on Gmail? Add the sending address to your contacts so it is never treated as spam.</li><!--]--></ul></li><li><b>Let the phone notify you</b><ul><!--[--><li>Gmail app (iPhone or Android): ☰ menu → Settings → your account → Notifications → “High priority only” (or “All”). The filter above makes every alert high priority.</li><li>iPhone Mail app: open a test alert, tap the sender, “Add to VIP”. Then Settings → Notifications → Mail → turn on alerts and a sound for VIP.</li><li>Outlook app: open a test alert → ⋯ → Move to Focused → Always move to Focused, and make sure Outlook notifies for Focused mail.</li><!--]--></ul></li><li><b>Let it through at night</b><ul><!--[--><li>iPhone: Settings → Focus → Sleep (and Do Not Disturb) → Apps → add Gmail or Mail to the allowed apps.</li><li>Android: Settings → Notifications → Do Not Disturb → Apps → add Gmail.</li><!--]--></ul></li><li><b>Test it the way it will happen</b><ul><!--[--><li>Send a test alert (above), lock your phone, turn on Sleep / Do Not Disturb — and check that it rings. Menus differ a little between phones and app versions; the test is the real check.</li><!--]--></ul></li><!--]--></ol><p class="warn-box small" style="margin:0;">Email is good for a heads-up. For something that must wake someone every time — heaters, frost protection — keep a second way too (a phone call tree, a hard-wired alarm). Google checks every 15 minutes, and email can be delayed.</p></div></section><!----></div></div></main></div></div><div id="teleports"></div><script>window.__NUXT__={};window.__NUXT__.config={public:{},app:{baseURL:"/tempalert/",buildId:"dc9f1ed6-6aaf-4b61-ad03-cf4a9286d076",buildAssetsDir:"/_nuxt/",cdnURL:""}}</script><script type="application/json" data-nuxt-data="nuxt-app" data-ssr="true" id="__NUXT_DATA__" data-src="/tempalert/setup/_payload.json?_b=dc9f1ed6-6aaf-4b61-ad03-cf4a9286d076">[{"state":1,"once":3,"_errors":4,"serverRendered":6,"path":7,"prerenderedAt":8},["Reactive",2],{},["Set"],["ShallowReactive",5],{},true,"\u002Fsetup",1790865032205]</script></body></html>
