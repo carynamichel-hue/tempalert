@@ -17,6 +17,11 @@
  *   · A reading that jumps more than 15 °F in an hour is held back until a
  *     later reading agrees — a station sending one bad number does not
  *     email anyone. Held jumps are written on the "Alert log" tab.
+ *   · A sensor can have a BACKUP (another station or sensor). While the main
+ *     one is not reporting, its alerts run on the backup's readings — one
+ *     email says so when it switches, one more when the main one is back.
+ *   · It keeps a 7-day tally of how often each sensor answered on time — the
+ *     reliability shown on the app's Readings card.
  *   · Every email it sends is written on the "Alert log" tab.
  *
  * WHAT IT CAN REACH (the permissions are set in appsscript.json, which the
@@ -62,7 +67,10 @@ var SUBJECT_TAG = '[Temp Alert]';
 var JUMP_F = 15;            // °F in an hour — more than that is held until a later reading agrees
 var NEWA_STALE_MIN = 240;   // NEWA stations count as "not reporting" only after 4 hours
 
-var ALERT_HEADERS = ['Sensor', 'Source', 'Station / sensor ID', 'Alert when', 'Temperature (°F)', 'Email to', 'On'];
+// the last three columns are optional: a backup read only while this sensor is not reporting
+var ALERT_HEADERS = ['Sensor', 'Source', 'Station / sensor ID', 'Alert when', 'Temperature (°F)', 'Email to', 'On',
+  'Backup name', 'Backup source', 'Backup station / sensor ID'];
+var REL_DAYS = 7;           // the reliability tally on the Readings card covers the last 7 days
 var LOG_HEADERS = ['Sent', 'Sensor', 'What happened', 'Reading (°F)', 'Reading time', 'Alert at (°F)', 'Emailed to'];
 // [key, label on the Settings tab, default]
 var SETTINGS = [
@@ -107,6 +115,7 @@ function doPost(e) {
     if (body.action === 'checking') { setChecking_(!!body.on); return json_(ownerView_(ss)); }
     if (body.action === 'checkNow') { runCheck_(ss, Date.now()); return json_(ownerView_(ss)); }
     if (body.action === 'test') return json_(sendTest_(ss, body.to));
+    if (body.action === 'history') return json_(historyAction_(body, Date.now()));
     return json_({ ok: false, error: 'Unknown action.' });
   } catch (err) {
     return json_({ ok: false, error: String((err && err.message) || err) });
@@ -119,11 +128,12 @@ function doPost(e) {
 // email addresses (a forwarded link must not hand out the crew's addresses).
 function publicView_(ss) {
   var cfg = readConfig_(ss);
+  var props = PropertiesService.getScriptProperties().getProperties();
   return {
     ok: true, sheetName: ss.getName(), title: cfg.title,
-    status: statusOf_(cfg, readState_()), checking: isChecking_(),
-    lastCheck: Number(getProp_('LAST_CHECK') || 0) || null,
-    hasKey: !!getKey_(), hasLicor: !!getProp_('LICOR_TOKEN'),
+    status: statusOf_(cfg, readState_(cfg, props), props), checking: isChecking_(),
+    lastCheck: Number(props.LAST_CHECK || 0) || null,
+    hasKey: !!props.SETUP_KEY, hasLicor: !!props.LICOR_TOKEN,
   };
 }
 function ownerView_(ss) {
@@ -150,24 +160,76 @@ function sendTestEmail() { return sendTest_(SpreadsheetApp.getActiveSpreadsheet(
 
 function runCheck_(ss, now) {
   var cfg = readConfig_(ss);
-  var state = readState_();
-  var next = {};
-  var token = getProp_('LICOR_TOKEN');
+  var props = PropertiesService.getScriptProperties().getProperties();
+  var state = readState_(cfg, props);
+  var save = {};
+  var token = props.LICOR_TOKEN || '';
   var tz = tz_(ss);
   var sent = [];
+  var day = localDay_(now, tzOffsetMin_(tz, now));
   cfg.sensors.forEach(function (s) {
     var key = sensorKey(s);
-    var reading = null, error = '';
-    try { reading = readSensor_(s, token, tz, now); } catch (err) { error = String((err && err.message) || err); }
-    var out = evaluate(s, reading, state[key] || null, cfg, now);
-    out.state.error = error;
-    next[key] = out.state;
+    var pick = readWithBackup_(s, token, tz, now, cfg);
+    var out = evaluate(s, pick.reading, state[key] || null, cfg, now);
+    out.state.error = String(pick.error || '').slice(0, 300);
+    // one small property per sensor: Google caps each at 9 kB, and one
+    // shared blob of 30 sensors with error texts would pass that
+    save['ST ' + key] = JSON.stringify(out.state);
     out.events.forEach(function (ev) { sent.push(deliver_(ss, cfg, s, ev, tz)); });
+    save['REL ' + key] = JSON.stringify(tally(parse_(props['REL ' + key], []), day,
+      { onTime: pick.mainOk, held: !!out.state.held && !(state[key] || {}).held, backup: out.state.from === 'backup' }));
   });
-  setProp_('STATE', JSON.stringify(next));
-  setProp_('LAST_CHECK', String(now));
+  save.LAST_CHECK = String(now);
+  PropertiesService.getScriptProperties().setProperties(save);
+  if (props.STATE != null) delProp_('STATE');   // the old one-blob state, moved
   return sent;
 }
+
+// The main sensor's newest reading — or, while it is not reporting and a
+// backup is set, the backup's. mainOk = the main one answered on time.
+function readWithBackup_(s, token, tz, now, cfg) {
+  var main = null, error = '';
+  try { main = readSensor_(s, token, tz, now); } catch (err) { error = String((err && err.message) || err); }
+  var mainOk = !!(main && isFinite(main.temp) && now - main.at <= staleMs_(s.source, cfg));
+  var out = { reading: main ? { temp: main.temp, at: main.at, from: 'main' } : null, error: error, mainOk: mainOk };
+  if (!mainOk && s.backup) {
+    try {
+      var b = readSensor_(s.backup, token, tz, now);
+      if (b && isFinite(b.temp) && now - b.at <= staleMs_(s.backup.source, cfg)) out.reading = { temp: b.temp, at: b.at, from: 'backup' };
+    } catch (err) { out.error = (error ? error + ' · ' : '') + 'Backup: ' + String((err && err.message) || err); }
+  }
+  return out;
+}
+
+// how old a reading may be before its source counts as "not reporting"
+function staleMs_(source, cfg) {
+  var ms = Math.max(15, Number(cfg.staleMinutes) || 120) * 60000;
+  // NEWA posts each hour late — its newest reading is often 2–3 hours old
+  return source === 'newa' ? Math.max(ms, NEWA_STALE_MIN * 60000) : ms;
+}
+
+/**
+ * Pure: the 7-day reliability tally. days = [[day, checks, onTime, held, backup], …]
+ * (day = days since 1970 on the sheet's clock), one row per day, oldest dropped.
+ */
+function tally(days, day, c) {
+  var out = (Array.isArray(days) ? days : []).filter(function (d) { return Array.isArray(d) && d[0] > day - REL_DAYS && d[0] <= day; });
+  var row = out.filter(function (d) { return d[0] === day; })[0];
+  if (!row) { row = [day, 0, 0, 0, 0]; out.push(row); }
+  row[1]++;
+  if (c.onTime) row[2]++;
+  if (c.held) row[3]++;
+  if (c.backup) row[4]++;
+  return out;
+}
+/** Pure: the tally → { pct, checks, held, backup, days } for the Readings card */
+function reliability(days) {
+  var r = { checks: 0, onTime: 0, held: 0, backup: 0, days: 0 };
+  (days || []).forEach(function (d) { r.days++; r.checks += d[1]; r.onTime += d[2]; r.held += d[3]; r.backup += d[4]; });
+  return r.checks ? { pct: Math.round(100 * r.onTime / r.checks), checks: r.checks, held: r.held, backup: r.backup, days: r.days } : null;
+}
+function localDay_(ms, offsetMin) { return Math.floor((ms + offsetMin * 60000) / 86400000); }
+function parse_(text, dflt) { try { var v = JSON.parse(text || 'null'); return v == null ? dflt : v; } catch (e) { return dflt; } }
 
 /**
  * Pure: one sensor, its newest reading (or null when it could not be read),
@@ -179,9 +241,6 @@ function runCheck_(ss, now) {
  */
 function evaluate(sensor, reading, prev, cfg, now) {
   prev = prev || { rules: {}, stale: false };
-  var staleMs = Math.max(15, Number(cfg.staleMinutes) || 120) * 60000;
-  // NEWA posts each hour late — its newest reading is often 2–3 hours old
-  if (sensor.source === 'newa') staleMs = Math.max(staleMs, NEWA_STALE_MIN * 60000);
   var margin = Math.max(0, Number(cfg.margin) || 0);
   var events = [];
   var everyone = recipients_(sensor);
@@ -202,16 +261,23 @@ function evaluate(sensor, reading, prev, cfg, now) {
     }
   }
 
-  var last = reading && isFinite(reading.temp) ? reading : (prev.at ? { temp: prev.temp, at: prev.at } : null);
-  var state = { temp: last ? last.temp : null, at: last ? last.at : null, checked: now, stale: false, rules: {}, held: held };
+  // from = 'main' or 'backup': which one this reading came from
+  var prevFrom = prev.from || 'main';
+  var last = reading && isFinite(reading.temp) ? reading : (prev.at ? { temp: prev.temp, at: prev.at, from: prevFrom } : null);
+  var from = last ? last.from || 'main' : 'main';
+  var state = { temp: last ? last.temp : null, at: last ? last.at : null, checked: now, stale: false, rules: {}, held: held, from: from };
   for (var k in prev.rules) state.rules[k] = prev.rules[k];
+  var src = from === 'backup' && sensor.backup ? sensor.backup.source : sensor.source;
 
-  if (!last || now - last.at > staleMs) {
+  if (!last || now - last.at > staleMs_(src, cfg)) {
     state.stale = true;
-    if (!prev.stale && everyone.length) events.push({ type: 'stale', to: everyone, temp: state.temp, at: state.at });
+    if (!prev.stale && everyone.length) events.push({ type: 'stale', to: everyone, temp: state.temp, at: state.at, from: from });
     return { state: state, events: events };
   }
-  if (prev.stale && everyone.length) events.push({ type: 'back', to: everyone, temp: last.temp, at: last.at });
+  if (prev.stale && everyone.length) events.push({ type: 'back', to: everyone, temp: last.temp, at: last.at, from: from });
+  // the main one stopped and the backup took over (or the main one is back):
+  // one email each way, so people know whose readings the alerts now follow
+  else if (from !== prevFrom && everyone.length) events.push({ type: from === 'backup' ? 'toBackup' : 'toMain', to: everyone, temp: last.temp, at: last.at, from: from });
 
   state.rules = {};
   (sensor.alerts || []).forEach(function (a) {
@@ -225,12 +291,12 @@ function evaluate(sensor, reading, prev, cfg, now) {
     if (a.on === false) now_ = 'ok';
     else if (was === 'ok' && hit) {
       now_ = 'alert';
-      if (a.emails.length) events.push({ type: 'alert', to: a.emails.slice(), alert: a, temp: v, at: last.at });
+      if (a.emails.length) events.push({ type: 'alert', to: a.emails.slice(), alert: a, temp: v, at: last.at, from: from });
     } else if (was === 'alert' && clear) {
       now_ = 'ok';
       // coming back from silence, the "reporting again" email already gives
       // the reading — a second "back to normal" one would just be noise
-      if (cfg.sendClear !== false && !prev.stale && a.emails.length) events.push({ type: 'clear', to: a.emails.slice(), alert: a, temp: v, at: last.at });
+      if (cfg.sendClear !== false && !prev.stale && a.emails.length) events.push({ type: 'clear', to: a.emails.slice(), alert: a, temp: v, at: last.at, from: from });
     }
     state.rules[k] = now_;
   });
@@ -254,14 +320,23 @@ function message(sensor, ev, cfg, fmt) {
   var f = function (v) { return v == null || !isFinite(v) ? '—' : (Math.round(v * 10) / 10) + '°F'; };
   var when = ev.at ? fmt(ev.at) : 'no reading yet';
   var a = ev.alert || {};
+  var bk = sensor.backup ? { name: sensor.backup.name || sensor.backup.id, source: sensor.backup.source, id: sensor.backup.id } : null;
+  var viaBackup = !!(bk && ev.from === 'backup');
+  var by = viaBackup ? ' (by its backup, ' + bk.name + ')' : '';
   var subject, lead;
-  if (ev.type === 'alert' && a.when === 'below') { subject = '🥶 ' + name + ' is ' + f(ev.temp) + ' (at or below ' + f(a.temp) + ')'; lead = name + ' has dropped to ' + f(ev.temp) + '.'; }
-  else if (ev.type === 'alert') { subject = '🔥 ' + name + ' is ' + f(ev.temp) + ' (at or above ' + f(a.temp) + ')'; lead = name + ' has reached ' + f(ev.temp) + '.'; }
+  if (ev.type === 'alert' && a.when === 'below') { subject = '🥶 ' + name + ' is ' + f(ev.temp) + ' (at or below ' + f(a.temp) + ')'; lead = name + ' has dropped to ' + f(ev.temp) + by + '.'; }
+  else if (ev.type === 'alert') { subject = '🔥 ' + name + ' is ' + f(ev.temp) + ' (at or above ' + f(a.temp) + ')'; lead = name + ' has reached ' + f(ev.temp) + by + '.'; }
   else if (ev.type === 'clear') { subject = '✅ ' + name + ' is back to ' + f(ev.temp); lead = name + ' is back to ' + f(ev.temp) + ' — past the ' + f(a.temp) + ' alert by the margin.'; }
-  else if (ev.type === 'stale') { subject = '⚠️ ' + name + ' has stopped reporting'; lead = 'No new reading from ' + name + ' for over ' + (Number(cfg.staleMinutes) || 120) + ' minutes. Its alerts cannot fire until it reports again — check it.'; }
-  else if (ev.type === 'back') { subject = '✅ ' + name + ' is reporting again (' + f(ev.temp) + ')'; lead = name + ' is reporting again.'; }
+  else if (ev.type === 'stale') {
+    subject = '⚠️ ' + name + ' has stopped reporting';
+    lead = 'No new reading from ' + name + (bk ? ' or its backup, ' + bk.name + ',' : '') + ' for over ' + Math.round(staleMs_(sensor.source, cfg) / 60000) + ' minutes. Its alerts cannot fire until it reports again — check it.';
+  }
+  else if (ev.type === 'back') { subject = '✅ ' + name + ' is reporting again (' + f(ev.temp) + ')'; lead = (viaBackup ? bk.name + ', the backup for ' + name + ',' : name) + ' is reporting again.'; }
+  else if (ev.type === 'toBackup') { subject = '🔁 ' + name + ' stopped reporting — now watching ' + bk.name; lead = name + ' is not reporting, so its alerts now follow its backup, ' + bk.name + ' (' + f(ev.temp) + '). You will get one more email when ' + name + ' is back.'; }
+  else if (ev.type === 'toMain') { subject = '✅ ' + name + ' is reporting again (' + f(ev.temp) + ')'; lead = name + ' is reporting again — its alerts follow it again, not the backup.'; }
   else { subject = 'Test alert'; lead = 'This is a test.'; }
   var lines = [lead, '', 'Reading: ' + f(ev.temp) + ' at ' + when, 'Sensor: ' + name + ' (' + (SOURCES[sensor.source] || sensor.source) + ' ' + sensor.id + ')'];
+  if (viaBackup) lines.push('Reading from the backup: ' + bk.name + ' (' + (SOURCES[bk.source] || bk.source) + ' ' + bk.id + ') — ' + name + ' is not reporting');
   if (ev.alert) lines.push('Alert: ' + (a.when === 'below' ? 'at or below ' : 'at or above ') + f(a.temp));
   if (cfg.appUrl) lines.push('', 'Live readings: ' + cfg.appUrl);
   lines.push('', '— Temp Alert' + (cfg.title ? ' · ' + cfg.title : ''));
@@ -276,7 +351,9 @@ function deliver_(ss, cfg, sensor, ev, tz) {
     return { type: 'held', to: [], subject: '', sent: false };
   }
   var m = message(sensor, ev, cfg, fmt);
-  var what = { alert: 'ALERT', clear: 'Back to normal', stale: 'Not reporting', back: 'Reporting again' }[ev.type] || ev.type;
+  var what = { alert: 'ALERT', clear: 'Back to normal', stale: 'Not reporting', back: 'Reporting again',
+    toBackup: 'Switched to the backup' + (sensor.backup ? ' (' + (sensor.backup.name || sensor.backup.id) + ')' : ''), toMain: 'Back on the main sensor' }[ev.type] || ev.type;
+  if (ev.from === 'backup' && sensor.backup && ev.type !== 'toBackup') what += ' — via backup ' + (sensor.backup.name || sensor.backup.id);
   var note = '';
   try {
     if (MailApp.getRemainingDailyQuota() < ev.to.length) throw new Error('Google’s daily email limit is used up — not sent');
@@ -345,7 +422,8 @@ function licorLatest(reply, serial) {
       if (!/^temperature$/i.test(String(m.measurementType || ''))) return;
       var isC = /c/i.test(m.units || '') && !/f/i.test(m.units || '');
       (m.records || []).forEach(function (rec) {
-        if (!rec || rec[1] == null || !isFinite(Number(rec[1]))) return;
+        // a blank is NOT 0 — Number('') is 0, and 0 °C would read as a frost
+        if (!rec || rec[1] == null || rec[1] === '' || !isFinite(Number(rec[1]))) return;
         var t = Number(rec[0]);
         if (!best || t > best.at) best = { at: t, temp: isC ? Number(rec[1]) * 9 / 5 + 32 : Number(rec[1]) };
       });
@@ -353,6 +431,41 @@ function licorLatest(reply, serial) {
   });
   if (!best) throw new Error('No temperature from this LI-COR sensor in the last 3 hours');
   return best;
+}
+
+// A LI-COR sensor's last few days as hourly lows — the app's station
+// scorecard compares each station's night lows with your own sensor's. The
+// token stays here; only temperatures go back.
+function historyAction_(body, now) {
+  var token = getProp_('LICOR_TOKEN');
+  if (!token) return { ok: false, error: 'No LI-COR token saved.' };
+  var parts = String(body.id || '').split('|');
+  var days = Math.min(14, Math.max(1, Number(body.days) || 7));
+  var q = 'deviceSerialNumber=' + encodeURIComponent(parts[0]) + '&sensorSerialNumber=' + encodeURIComponent(parts[1] || '') +
+    '&startTime=' + Math.floor(now - days * 86400000) + '&endTime=' + Math.floor(now);
+  var r = fetch_('https://api.licor.cloud/v2/data?' + q, { headers: { Authorization: 'Bearer ' + token } });
+  if (r.code !== 200) return { ok: false, error: 'LI-COR answered ' + r.code + why_(r.text) };
+  return { ok: true, points: licorHourlyLows(JSON.parse(r.text), parts[1] || '') };
+}
+// Pure: /v2/data reply → [[hourStartMs, lowest °F in that hour], …] oldest first.
+function licorHourlyLows(reply, serial) {
+  var byHour = {};
+  var base = String(serial).split('-')[0];
+  ((reply && reply.sensors) || []).forEach(function (sn) {
+    var full = String(sn.sensorSerialNumber || '');
+    if (full !== serial && full.split('-')[0] !== base) return;
+    (sn.data || []).forEach(function (m) {
+      if (!/^temperature$/i.test(String(m.measurementType || ''))) return;
+      var isC = /c/i.test(m.units || '') && !/f/i.test(m.units || '');
+      (m.records || []).forEach(function (rec) {
+        if (!rec || rec[1] == null || rec[1] === '' || !isFinite(Number(rec[1]))) return;
+        var h = Math.floor(Number(rec[0]) / 3600000) * 3600000;
+        var v = isC ? Number(rec[1]) * 9 / 5 + 32 : Number(rec[1]);
+        if (!(h in byHour) || v < byHour[h]) byHour[h] = v;
+      });
+    });
+  });
+  return Object.keys(byHour).map(Number).sort(function (a, b) { return a - b; }).map(function (h) { return [h, Math.round(byHour[h] * 10) / 10]; });
 }
 
 // Every temperature sensor on the LI-COR account, for the app's picker.
@@ -483,8 +596,11 @@ function alertsFromValues(values) {
     var id = col(row, 2);
     if (!id || !SOURCES[source]) continue;
     var key = source + ':' + id;
-    if (!(key in ix)) { ix[key] = out.length; out.push({ name: col(row, 0) || id, source: source, id: id, alerts: [] }); }
+    if (!(key in ix)) { ix[key] = out.length; out.push({ name: col(row, 0) || id, source: source, id: id, alerts: [], backup: null }); }
     var s = out[ix[key]];
+    // the backup may be written on any of the sensor's rows — the first one counts
+    var bSource = SOURCE_FROM_LABEL[col(row, 8).toLowerCase()] || col(row, 8).toLowerCase(), bId = col(row, 9);
+    if (!s.backup && bId && SOURCES[bSource] && !(bSource === source && bId === id)) s.backup = { name: col(row, 7) || bId, source: bSource, id: bId };
     var when = col(row, 3).toLowerCase();
     when = /below|under|≤|<|cold|frost/.test(when) ? 'below' : (/above|over|≥|>|hot|heat/.test(when) ? 'above' : '');
     var temp = col(row, 4);
@@ -500,11 +616,13 @@ function alertsToValues(sensors) {
   (sensors || []).forEach(function (s) {
     if (!s || !s.id || !SOURCES[s.source]) return;
     var base = [safe_(s.name || s.id), SOURCES[s.source], safe_(String(s.id))];
+    var b = s.backup && s.backup.id && SOURCES[s.backup.source] && !(s.backup.source === s.source && String(s.backup.id) === String(s.id)) ? s.backup : null;
+    var backup = b ? [safe_(b.name || b.id), SOURCES[b.source], safe_(String(b.id))] : ['', '', ''];
     var alerts = (s.alerts || []).filter(validAlert_);
-    if (!alerts.length) out.push(base.concat(['', '', '', '']));
+    if (!alerts.length) out.push(base.concat(['', '', '', ''], backup));
     alerts.forEach(function (a) {
       out.push(base.concat([a.when === 'below' ? 'At or below' : 'At or above', Number(a.temp),
-        safe_(cleanEmails(a.emails).join(', ')), a.on === false ? 'No' : 'Yes']));
+        safe_(cleanEmails(a.emails).join(', ')), a.on === false ? 'No' : 'Yes'], backup));
     });
   });
   return out;
@@ -548,13 +666,16 @@ function cleanEmails(v) {
 }
 
 // Readings + alert states for the app (no addresses — counts only).
-function statusOf_(cfg, state) {
+function statusOf_(cfg, state, props) {
   return cfg.sensors.map(function (s) {
     var st = state[sensorKey(s)] || {};
     return {
       key: sensorKey(s), name: s.name, source: s.source, id: s.id,
       temp: st.temp == null ? null : Math.round(st.temp * 10) / 10, at: st.at || null, checked: st.checked || null,
       stale: !!st.stale, error: st.error || '',
+      backup: s.backup ? { name: s.backup.name, source: s.backup.source, id: s.backup.id } : null,
+      onBackup: st.from === 'backup' && !!s.backup,
+      reliability: reliability(parse_((props || {})['REL ' + sensorKey(s)], [])),
       alerts: (s.alerts || []).map(function (a) {
         return { when: a.when, temp: a.temp, on: a.on !== false, people: a.emails.length, state: (st.rules || {})[ruleKey(a)] || 'ok' };
       }),
@@ -586,7 +707,19 @@ function ensureSheet_(ss, name, headers) {
   }
   return sheet;
 }
-function readState_() { try { return JSON.parse(getProp_('STATE') || '{}') || {}; } catch (e) { return {}; } }
+// each sensor's state from its own property ("ST <key>"); a sheet set up
+// before 10-02 kept them all in one STATE property — read that as a fallback
+function readState_(cfg, props) {
+  props = props || PropertiesService.getScriptProperties().getProperties();
+  var legacy = parse_(props.STATE, {});
+  var out = {};
+  cfg.sensors.forEach(function (s) {
+    var k = sensorKey(s);
+    var v = parse_(props['ST ' + k], null) || legacy[k] || null;
+    if (v) out[k] = v;
+  });
+  return out;
+}
 function tz_(ss) { return (ss.getSpreadsheetTimeZone && ss.getSpreadsheetTimeZone()) || Session.getScriptTimeZone() || 'America/New_York'; }
 // minutes east of UTC on that clock, e.g. -240 for EDT
 function tzOffsetMin_(tz, now) {
