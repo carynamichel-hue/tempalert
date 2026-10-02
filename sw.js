@@ -13,7 +13,7 @@
    always match the server.
    CACHE is stamped per deploy by the deploy script; the source keeps the
    -v1 placeholder. */
-var CACHE = 'tempalert-20261002114803';
+var CACHE = 'tempalert-20261002121247';
 var SHELL = ['./', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', function (e) {
