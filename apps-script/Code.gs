@@ -12,7 +12,11 @@
  *     is back to normal (a couple of degrees past the line, so a reading
  *     hovering right at 32 does not send twenty emails).
  *   · If a sensor stops reporting, it says so — a dead sensor must never
- *     look like a quiet night.
+ *     look like a quiet night. (NEWA stations post each hour late, so they
+ *     count as "not reporting" only after 4 hours.)
+ *   · A reading that jumps more than 15 °F in an hour is held back until a
+ *     later reading agrees — a station sending one bad number does not
+ *     email anyone. Held jumps are written on the "Alert log" tab.
  *   · Every email it sends is written on the "Alert log" tab.
  *
  * WHAT IT CAN REACH (the permissions are set in appsscript.json, which the
@@ -55,6 +59,8 @@ var SETTINGS_TAB = 'Settings';
 var LOG = 'Alert log';
 var CHECK_EVERY_MIN = 15;
 var SUBJECT_TAG = '[Temp Alert]';
+var JUMP_F = 15;            // °F in an hour — more than that is held until a later reading agrees
+var NEWA_STALE_MIN = 240;   // NEWA stations count as "not reporting" only after 4 hours
 
 var ALERT_HEADERS = ['Sensor', 'Source', 'Station / sensor ID', 'Alert when', 'Temperature (°F)', 'Email to', 'On'];
 var LOG_HEADERS = ['Sent', 'Sensor', 'What happened', 'Reading (°F)', 'Reading time', 'Alert at (°F)', 'Emailed to'];
@@ -174,11 +180,30 @@ function runCheck_(ss, now) {
 function evaluate(sensor, reading, prev, cfg, now) {
   prev = prev || { rules: {}, stale: false };
   var staleMs = Math.max(15, Number(cfg.staleMinutes) || 120) * 60000;
+  // NEWA posts each hour late — its newest reading is often 2–3 hours old
+  if (sensor.source === 'newa') staleMs = Math.max(staleMs, NEWA_STALE_MIN * 60000);
   var margin = Math.max(0, Number(cfg.margin) || 0);
-  var last = reading && isFinite(reading.temp) ? reading : (prev.at ? { temp: prev.temp, at: prev.at } : null);
-  var state = { temp: last ? last.temp : null, at: last ? last.at : null, checked: now, stale: false, rules: {} };
   var events = [];
   var everyone = recipients_(sensor);
+
+  // A jump bigger than real weather makes (more than JUMP_F an hour) is held
+  // back until a LATER reading agrees with it — a station serving a junk 32
+  // for one hour, then the real 74 again, must not send two emails (10-01).
+  var held = null;
+  if (reading && isFinite(reading.temp) && prev.at && isFinite(prev.temp)) {
+    var hours = Math.max(1, Math.abs(reading.at - prev.at) / 3600000);
+    if (Math.abs(reading.temp - prev.temp) > JUMP_F * hours) {
+      var confirmed = prev.held && reading.at > prev.held.at && Math.abs(reading.temp - prev.held.temp) <= JUMP_F;
+      if (!confirmed) {
+        held = { temp: reading.temp, at: reading.at };
+        if (!prev.held) events.push({ type: 'held', to: [], temp: reading.temp, at: reading.at, was: prev.temp });
+        reading = null;
+      }
+    }
+  }
+
+  var last = reading && isFinite(reading.temp) ? reading : (prev.at ? { temp: prev.temp, at: prev.at } : null);
+  var state = { temp: last ? last.temp : null, at: last ? last.at : null, checked: now, stale: false, rules: {}, held: held };
   for (var k in prev.rules) state.rules[k] = prev.rules[k];
 
   if (!last || now - last.at > staleMs) {
@@ -245,6 +270,11 @@ function message(sensor, ev, cfg, fmt) {
 
 function deliver_(ss, cfg, sensor, ev, tz) {
   var fmt = function (ms) { return Utilities.formatDate(new Date(ms), tz, 'EEE MMM d, h:mm a'); };
+  if (ev.type === 'held') {   // written down, never emailed
+    log_(ss, [new Date(), sensor.name || sensor.id, 'Ignored a jump from ' + num_(ev.was) + ' — waiting for the next reading to agree',
+      num_(ev.temp), ev.at ? new Date(ev.at) : '', '', '']);
+    return { type: 'held', to: [], subject: '', sent: false };
+  }
   var m = message(sensor, ev, cfg, fmt);
   var what = { alert: 'ALERT', clear: 'Back to normal', stale: 'Not reporting', back: 'Reporting again' }[ev.type] || ev.type;
   var note = '';
